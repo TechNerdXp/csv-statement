@@ -17,14 +17,14 @@ if sys.platform == 'win32':
 #   - PDF_DIRECTORY = "pdfs"                                    # Project pdfs folder (relative)
 #   - PDF_DIRECTORY = r"C:\HSBC convert"                        # Absolute Windows path
 #   - PDF_DIRECTORY = r"C:\Users\YourName\Documents\Statements" # Another absolute path
-PDF_DIRECTORY = r"C:\HSBC convert"  # Testing from C:\HSBC convert
+PDF_DIRECTORY = r"PDFs"  # Testing from C:\HSBC convert
 
 # Output directory for CSV files
 # Examples:
 #   - OUTPUT_DIRECTORY = "csvs"                    # Project csvs folder (relative)
 #   - OUTPUT_DIRECTORY = PDF_DIRECTORY             # Same as PDF location
 #   - OUTPUT_DIRECTORY = r"C:\HSBC convert\CSVs"   # Absolute Windows path
-OUTPUT_DIRECTORY = r"C:\HSBC convert\CSVs"  # Separate CSV output folder
+OUTPUT_DIRECTORY = r"CSVs"  # Separate CSV output folder
 # ============================================================================
 
 def extract_pdf_text(pdf_path):
@@ -491,21 +491,53 @@ if __name__ == "__main__":
     pdf_dir = Path(PDF_DIRECTORY).resolve()
     output_dir = Path(OUTPUT_DIRECTORY).resolve()
     
-    # Create directories if they don't exist
-    pdf_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
     print(f"\n📂 PDF Directory: {pdf_dir}")
     print(f"📂 Output Directory: {output_dir}")
+    
+    # Create PDF directory if it doesn't exist
+    try:
+        if not pdf_dir.exists():
+            print(f"   📁 Creating PDF directory...")
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            print(f"   ✅ PDF directory created successfully!")
+        else:
+            print(f"   ✅ PDF directory exists")
+    except Exception as e:
+        print(f"\n❌ ERROR: Cannot create PDF directory: {pdf_dir}")
+        print(f"   Reason: {str(e)}")
+        print(f"\n💡 Please check:")
+        print(f"   - Directory path is valid")
+        print(f"   - You have write permissions")
+        print(f"   - Parent directories exist or can be created")
+        exit(1)
+    
+    # Create output directory if it doesn't exist
+    try:
+        if not output_dir.exists():
+            print(f"   📁 Creating output directory...")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"   ✅ Output directory created successfully!")
+        else:
+            print(f"   ✅ Output directory exists")
+    except Exception as e:
+        print(f"\n❌ ERROR: Cannot create output directory: {output_dir}")
+        print(f"   Reason: {str(e)}")
+        print(f"\n💡 Please check:")
+        print(f"   - Directory path is valid")
+        print(f"   - You have write permissions")
+        print(f"   - Parent directories exist or can be created")
+        exit(1)
     
     # Find all PDF files in the specified directory
     pdf_files = list(pdf_dir.glob("*.pdf"))
     
     if not pdf_files:
-        print(f"\n❌ ERROR: No PDF files found in {pdf_dir.absolute()}")
-        print("\n💡 Please place your HSBC statement PDF(s) in the specified directory.")
-        print("   Or update PDF_DIRECTORY at the top of this script.")
-        exit(1)
+        print(f"\n⚠️  No PDF files found in {pdf_dir}")
+        print(f"\n💡 Next steps:")
+        print(f"   1. Place your HSBC statement PDF(s) in: {pdf_dir}")
+        print(f"   2. Run this script again")
+        print(f"\n   Or update PDF_DIRECTORY at the top of this script (currently set to: '{PDF_DIRECTORY}')")
+        exit(0)
     
     print(f"\n📄 Found {len(pdf_files)} PDF file(s) to process:")
     for pdf in pdf_files:
