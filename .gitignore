@@ -11,6 +11,7 @@ pdfs/
 # Scratch Files
 scratchpad.md
 *.txt
+!requirements.txt
 
 # Python Cache
 __pycache__/

@@ -14,9 +14,14 @@ Drop in your HSBC statement PDFs → Get clean CSV files with:
 
 ---
 
-## ⚡ Quick Start (3 Steps)
+## ⚡ Quick Start (4 Steps)
 
-### 1️⃣ Put PDFs Here
+### 1️⃣ Install Dependencies (First Time Only)
+```bash
+pip install -r requirements.txt
+```
+
+### 2️⃣ Put PDFs Here
 ```
 pdfs/
 └── 2024-04-30_Statement.pdf  ← Drop your HSBC statement here
