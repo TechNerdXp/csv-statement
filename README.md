@@ -147,5 +147,5 @@ Hatem Statement Extractor/
 
 ---
 
-**Made with ❤️ for easy bank statement processing**  
+**Made with ❤️ by @TechNerdXp for easy bank statement processing**  
 *Last updated: October 12, 2025*
