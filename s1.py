@@ -17,14 +17,14 @@ if sys.platform == 'win32':
 #   - PDF_DIRECTORY = "pdfs"                                    # Project pdfs folder (relative)
 #   - PDF_DIRECTORY = r"C:\HSBC convert"                        # Absolute Windows path
 #   - PDF_DIRECTORY = r"C:\Users\YourName\Documents\Statements" # Another absolute path
-PDF_DIRECTORY = "pdfs"  # Default: pdfs folder in project directory
+PDF_DIRECTORY = r"C:\HSBC convert"  # Testing from C:\HSBC convert
 
 # Output directory for CSV files
 # Examples:
 #   - OUTPUT_DIRECTORY = "csvs"                    # Project csvs folder (relative)
 #   - OUTPUT_DIRECTORY = PDF_DIRECTORY             # Same as PDF location
 #   - OUTPUT_DIRECTORY = r"C:\HSBC convert\CSVs"   # Absolute Windows path
-OUTPUT_DIRECTORY = "csvs"  # Default: csvs folder in project directory
+OUTPUT_DIRECTORY = r"C:\HSBC convert\CSVs"  # Separate CSV output folder
 # ============================================================================
 
 def extract_pdf_text(pdf_path):
