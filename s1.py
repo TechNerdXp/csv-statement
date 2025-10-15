@@ -65,6 +65,8 @@ def clean_description(desc):
     """Clean up description by removing payment type codes and extra spaces"""
     # Remove payment type prefixes
     desc = re.sub(r'^(DD|VISA|VIS|BP|CR|CRS|CRA|\)\)\))', '', desc)
+    # Remove DR prefix from "DRNon-Sterling Transaction Fee"
+    desc = re.sub(r'^DR(Non-Sterling Transaction Fee)', r'\1', desc)
     # Remove multiple spaces
     desc = re.sub(r'\s+', ' ', desc)
     return desc.strip()
@@ -353,6 +355,15 @@ def determine_debit_credit(all_transactions, working_balances=None):
         # Use working balance for this transaction
         current_balance = working_balances[i]
         
+        # Special handling for Non-Sterling Transaction Fee - always a fee (paid out)
+        desc = trans['description']
+        if 'Non-Sterling Transaction Fee' in desc or 'DRNon-Sterling Transaction Fee' in desc:
+            trans['paid_out'] = trans['amount']
+            trans['paid_in'] = ''
+            if current_balance is not None:
+                previous_balance = current_balance
+            continue
+        
         if current_balance is not None and previous_balance is not None:
             # Check if balance went UP or DOWN
             # Money OUT: current = previous - amount (balance decreased)
@@ -380,7 +391,6 @@ def determine_debit_credit(all_transactions, working_balances=None):
             # First transaction with balance - need to guess
             # Check the account summary to know starting balance
             # For now, assume CR/CRS/CRA = IN, others = OUT
-            desc = trans['description']
             if desc.startswith(('CR', 'CRS', 'CRA')):
                 trans['paid_in'] = trans['amount']
                 trans['paid_out'] = ''
@@ -389,7 +399,6 @@ def determine_debit_credit(all_transactions, working_balances=None):
                 trans['paid_in'] = ''
         else:
             # No balance info - guess based on description
-            desc = trans['description']
             if desc.startswith(('CR', 'CRS', 'CRA')):
                 trans['paid_in'] = trans['amount']
                 trans['paid_out'] = ''
@@ -407,10 +416,10 @@ def export_to_csv(transactions, output_file='statement_transactions.csv'):
     """Export transactions to CSV with all 6 required fields"""
     print(f"\n💾 Exporting to {output_file}...")
     
-    # Filter out duplicate "Fee for maintaining the account Monthly" entries
-    # These are duplicates of "DRINS ASPECTS FEE" charges
+    # Filter out duplicate and unwanted entries
     filtered_transactions = []
     excluded_count = 0
+    visa_rate_count = 0
     
     for trans in transactions:
         clean_desc = clean_description(trans['description'])
@@ -421,10 +430,18 @@ def export_to_csv(transactions, output_file='statement_transactions.csv'):
             print(f"  ⏭️  Excluding duplicate fee: {trans['date']} | {clean_desc}")
             continue
         
+        # Skip "Visa Rate" entries - these are just exchange rate info lines, not actual transactions
+        if "Visa Rate" in clean_desc:
+            visa_rate_count += 1
+            print(f"  ⏭️  Excluding Visa Rate info line: {trans['date']} | {clean_desc}")
+            continue
+        
         filtered_transactions.append(trans)
     
     if excluded_count > 0:
         print(f"  ℹ️  Excluded {excluded_count} duplicate bank fee transaction(s)")
+    if visa_rate_count > 0:
+        print(f"  ℹ️  Excluded {visa_rate_count} Visa Rate info line(s)")
     
     with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
         fieldnames = ['Date', 'Payment type', 'Details', '£Paid out', '£Paid in', '£Balance']
