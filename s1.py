@@ -407,12 +407,31 @@ def export_to_csv(transactions, output_file='statement_transactions.csv'):
     """Export transactions to CSV with all 6 required fields"""
     print(f"\n💾 Exporting to {output_file}...")
     
+    # Filter out duplicate "Fee for maintaining the account Monthly" entries
+    # These are duplicates of "DRINS ASPECTS FEE" charges
+    filtered_transactions = []
+    excluded_count = 0
+    
+    for trans in transactions:
+        clean_desc = clean_description(trans['description'])
+        
+        # Skip "Fee for maintaining the account Monthly" as it's a duplicate of DRINS ASPECTS FEE
+        if "Fee for maintaining the account Monthly" in clean_desc:
+            excluded_count += 1
+            print(f"  ⏭️  Excluding duplicate fee: {trans['date']} | {clean_desc}")
+            continue
+        
+        filtered_transactions.append(trans)
+    
+    if excluded_count > 0:
+        print(f"  ℹ️  Excluded {excluded_count} duplicate bank fee transaction(s)")
+    
     with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
         fieldnames = ['Date', 'Payment type', 'Details', '£Paid out', '£Paid in', '£Balance']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
         writer.writeheader()
-        for trans in transactions:
+        for trans in filtered_transactions:
             payment_type = extract_payment_type(trans['description'])
             clean_desc = clean_description(trans['description'])
             
@@ -425,7 +444,7 @@ def export_to_csv(transactions, output_file='statement_transactions.csv'):
                 '£Balance': trans['balance']
             })
     
-    print(f"✅ Successfully exported {len(transactions)} transactions to {output_file}")
+    print(f"✅ Successfully exported {len(filtered_transactions)} transactions to {output_file}")
     return output_file
 
 def process_pdf(pdf_path, output_dir):
