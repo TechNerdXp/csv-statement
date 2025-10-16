@@ -1,4 +1,5 @@
 ﻿import PyPDF2
+import pdfplumber
 import re
 import csv
 import os
@@ -33,9 +34,36 @@ def extract_pdf_text(pdf_path):
         pdf_reader = PyPDF2.PdfReader(file)
         print(f"📄 Total pages in PDF: {len(pdf_reader.pages)}")
         all_text = []
-        for page in pdf_reader.pages:
-            text = page.extract_text()
-            all_text.append(text)
+        failed_pages = []
+        
+        for page_num, page in enumerate(pdf_reader.pages, 1):
+            try:
+                text = page.extract_text()
+                all_text.append(text)
+            except Exception as e:
+                print(f"⚠️  Warning: PyPDF2 failed on page {page_num}: {str(e)}")
+                failed_pages.append(page_num - 1)  # Store 0-indexed page number
+                all_text.append("")  # Add empty string temporarily
+        
+        # If there are failed pages, try using pdfplumber
+        if failed_pages:
+            print(f"   📋 Attempting to extract {len(failed_pages)} failed page(s) using pdfplumber...")
+            try:
+                with pdfplumber.open(pdf_path) as pdf:
+                    for page_idx in failed_pages:
+                        try:
+                            page = pdf.pages[page_idx]
+                            text = page.extract_text()
+                            if text:
+                                all_text[page_idx] = text
+                                print(f"   ✅ Successfully extracted page {page_idx + 1} using pdfplumber")
+                            else:
+                                print(f"   ⚠️  Page {page_idx + 1} has no extractable text")
+                        except Exception as e:
+                            print(f"   ❌ pdfplumber also failed on page {page_idx + 1}: {str(e)}")
+            except Exception as e:
+                print(f"   ❌ Could not open PDF with pdfplumber: {str(e)}")
+        
         return all_text
 
 def clean_amount(amount_str):

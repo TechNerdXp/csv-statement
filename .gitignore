@@ -7,6 +7,7 @@ ENV/
 # Output Directories
 csvs/
 pdfs/
+pdfs2/
 
 # Scratch Files
 scratchpad.md
