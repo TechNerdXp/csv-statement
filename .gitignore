@@ -8,6 +8,8 @@ ENV/
 csvs/
 pdfs/
 pdfs2/
+pdfs22/
+pdfs24/
 
 # Scratch Files
 scratchpad.md

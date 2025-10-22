@@ -18,7 +18,7 @@ if sys.platform == 'win32':
 #   - PDF_DIRECTORY = "pdfs"                                    # Project pdfs folder (relative)
 #   - PDF_DIRECTORY = r"C:\HSBC convert"                        # Absolute Windows path
 #   - PDF_DIRECTORY = r"C:\Users\YourName\Documents\Statements" # Another absolute path
-PDF_DIRECTORY = r"PDFs"  # Testing from C:\HSBC convert
+PDF_DIRECTORY = r"PDFs22"  # Testing from C:\HSBC convert
 
 # Output directory for CSV files
 # Examples:
@@ -26,6 +26,12 @@ PDF_DIRECTORY = r"PDFs"  # Testing from C:\HSBC convert
 #   - OUTPUT_DIRECTORY = PDF_DIRECTORY             # Same as PDF location
 #   - OUTPUT_DIRECTORY = r"C:\HSBC convert\CSVs"   # Absolute Windows path
 OUTPUT_DIRECTORY = r"CSVs"  # Separate CSV output folder
+
+# Output mode: Set to True for single combined CSV, False for separate CSV per PDF
+# Examples:
+#   - COMBINED_OUTPUT = False  # Default: Creates 2022-04-19_Statement_transactions.csv, etc.
+#   - COMBINED_OUTPUT = True   # Creates single All_Transactions_YYYY-MM-DD_to_YYYY-MM-DD.csv
+COMBINED_OUTPUT = True  # False = separate CSV for each PDF, True = one combined CSV
 # ============================================================================
 
 def extract_pdf_text(pdf_path):
@@ -123,12 +129,18 @@ def parse_page_transactions(page_text, page_num, last_date_from_prev_page=None):
     lines = page_text.split('\n')
     transaction_lines = []
     
-    # First, collect all transaction lines (before BALANCEBROUGHTFORWARD/BALANCECARRIEDFORWARD footer)
+    # First, collect all transaction lines (skip BALANCEBROUGHTFORWARD, stop at BALANCECARRIEDFORWARD footer)
     for line in lines:
-        # Stop when we hit the footer section with both markers
-        if 'BALANCEBROUGHTFORWARD' in line and 'BALANCECARRIEDFORWARD' in line:
+        # Skip the opening BALANCEBROUGHTFORWARD line (start of statement)
+        if 'BALANCEBROUGHTFORWARD' in line and 'BALANCECARRIEDFORWARD' not in line:
+            continue
+        # Stop when we hit the footer section (BALANCECARRIEDFORWARD, interest rates, etc.)
+        if 'BALANCECARRIEDFORWARD' in line:
             break
         if 'Date Paymenttypeanddetails' in line:
+            break
+        # Stop at interest rate section markers
+        if ('Creditinterest' in line and '%' in line) or ('upto 25' in line and '%' in line):
             break
         transaction_lines.append(line)
     
@@ -206,10 +218,13 @@ def parse_page_transactions(page_text, page_num, last_date_from_prev_page=None):
         
         elif current_date:
             # Line without date - continuation or amount line
-            amounts = re.findall(r'[\d,]+\.\d{2}', line)
+            # First, check for exchange rates (@ X.XXXX) and exclude them from amount detection
+            line_without_rates = re.sub(r'@\s*[\d,]+\.\d+', '@', line)  # Replace rate with just @ symbol
+            amounts = re.findall(r'[\d,]+\.\d{2}', line_without_rates)
             
             if amounts:
                 # This line has the amounts - complete the transaction
+                # Use original line for description (keep @ symbol for filtering later)
                 desc_part = line
                 for amt in amounts:
                     desc_part = desc_part.replace(amt, '').strip()
@@ -223,8 +238,14 @@ def parse_page_transactions(page_text, page_num, last_date_from_prev_page=None):
                     trans_amt = clean_amount(amounts[-2])
                     balance = clean_amount(amounts[-1])
                 elif len(amounts) == 1:
-                    trans_amt = clean_amount(amounts[0])
-                    balance = ''
+                    # One amount - could be trans_amt OR balance
+                    # If description is empty/minimal, it's likely just a balance line
+                    if not full_desc or len(full_desc) < 3:
+                        trans_amt = ''
+                        balance = clean_amount(amounts[0])
+                    else:
+                        trans_amt = clean_amount(amounts[0])
+                        balance = ''
                 
                 transactions.append({
                     'date': current_date,
@@ -240,6 +261,87 @@ def parse_page_transactions(page_text, page_num, last_date_from_prev_page=None):
                     current_desc_parts.append(line)
         
         i += 1
+    
+    # INTERNATIONAL TRANSACTION PASS: Merge INT'L transactions with their Visa Rate lines
+    # INT'L transactions are followed by a "Visa Rate" line showing the GBP equivalent
+    # We need to use the Visa Rate amount as the actual transaction amount
+    i = 0
+    while i < len(transactions):
+        trans = transactions[i]
+        if "INT'L" in trans['description'] or 'International' in trans['description']:
+            # Look for the next transaction on same date with "Visa Rate" in description
+            if i + 1 < len(transactions):
+                next_trans = transactions[i + 1]
+                if next_trans['date'] == trans['date'] and 'Visa Rate' in next_trans['description']:
+                    # Merge: use Visa Rate amount as the actual GBP amount
+                    gbp_amount = next_trans['amount']
+                    trans['amount'] = gbp_amount
+                    # Remove the Visa Rate line
+                    transactions.pop(i + 1)
+                    print(f"  🔗 Merged INT'L transaction: {trans['description'][:40]} - GBP amount: £{gbp_amount}")
+        i += 1
+    
+    # FINAL PASS: Look for orphaned transactions (no date, but have reference + amount)
+    # These might be related charges that got separated in PDF extraction
+    # Example: "DRNWBDM2I70822757 \n RBC08042JE908KCG 5.00" with no date
+    # We'll match by reference code and insert after the related transaction
+    # Search in ALL lines (not just transaction_lines), as orphans may be in footer section
+    
+    orphans_to_insert = []  # List of (index_to_insert_after, orphan_transaction)
+    
+    for idx in range(len(lines)):
+        line = lines[idx].strip()
+        # Skip if line has a date
+        if re.match(r'^\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2}', line):
+            continue
+        # Skip if no amount
+        if not re.search(r'[\d,]+\.\d{2}', line):
+            continue
+        # Skip if it's just a balance line or common text
+        if 'BALANCE' in line or 'Date Payment' in line:
+            continue
+            
+        # Look for reference codes (e.g., RBC08042JE908KCG)
+        ref_match = re.search(r'[A-Z]{3}\d{5}[A-Z]{2}\d{3}[A-Z]{3}', line)
+        if ref_match:
+            reference = ref_match.group()
+            amounts = re.findall(r'[\d,]+\.\d{2}', line)
+            if amounts:
+                orphan_amount = clean_amount(amounts[-1])
+                # Try to find a transaction with matching reference and its index
+                # We want to insert AFTER the balance-only line (not after the description line)
+                # because they will be merged later
+                for trans_idx, trans in enumerate(transactions):
+                    if reference in trans['description']:
+                        print(f"  🔗 Found orphaned transaction matching {reference}: £{orphan_amount}")
+                        # Create a new transaction with same date and reference
+                        desc_parts = line.replace(reference, '').strip()
+                        for amt in amounts:
+                            desc_parts = desc_parts.replace(amt, '').strip()
+                        
+                        # Find the balance-only line with same date (this is what will be merged)
+                        orphan_balance = ''
+                        balance_line_idx = trans_idx
+                        for t_idx, t in enumerate(transactions):
+                            if t['date'] == trans['date'] and not t['description'] and not t['amount'] and t['balance']:
+                                orphan_balance = t['balance']
+                                balance_line_idx = t_idx  # Insert after this line instead
+                                break
+                        
+                        orphan_trans = {
+                            'date': trans['date'],
+                            'description': desc_parts + ' ' + reference if desc_parts else '',
+                            'amount': orphan_amount,
+                            'balance': orphan_balance,  # Use balance from balance-only line if found
+                            '_is_orphan_debit': True  # Mark as orphaned debit for direction logic
+                        }
+                        orphans_to_insert.append((balance_line_idx, orphan_trans))  # Insert after balance line
+                        print(f"  ✓ {trans['date']} | {(desc_parts + ' ' + reference if desc_parts else '')[:35]:<35} | £{orphan_amount:<10} | Bal: £{orphan_balance}")
+                        break
+    
+    # Insert orphans in reverse order (so indices don't shift)
+    for insert_idx, orphan_trans in reversed(orphans_to_insert):
+        transactions.insert(insert_idx + 1, orphan_trans)
     
     # Return transactions and the last date seen on this page
     return transactions, current_date
@@ -274,46 +376,30 @@ def merge_split_transactions(transactions):
     for bal_idx, bal_trans in balance_only_trans:
         if bal_idx in skip_indices:
             continue
+        
+        # Strategy: Find desc-only transaction with same date that's closest to this balance line
+        bal_date = bal_trans.get('date', '')
+        
+        # Find desc-only transactions with matching date
+        candidates = [(desc_idx, desc_trans) for desc_idx, desc_trans in desc_only_trans 
+                      if desc_trans.get('date') == bal_date and desc_idx not in skip_indices]
+        
+        if candidates:
+            # Find the closest one (prefer the one right after the balance line)
+            # Sort by absolute distance from bal_idx
+            candidates.sort(key=lambda x: abs(x[0] - bal_idx))
+            desc_idx, desc_trans = candidates[0]
             
-        # Calculate what the transaction amount should be
-        try:
-            balance_val = float(bal_trans['balance'])
-            # Find previous balance by looking at ORIGINAL transactions list before this one
-            prev_balance = None
-            for j in range(bal_idx - 1, -1, -1):
-                if transactions[j].get('balance'):
-                    try:
-                        prev_balance = float(transactions[j]['balance'])
-                        break
-                    except:
-                        pass
-            
-            if prev_balance:
-                # Calculate expected transaction amount
-                expected_amount = abs(prev_balance - balance_val)
-                
-                # Find matching desc-only transaction
-                for desc_idx, desc_trans in desc_only_trans:
-                    if desc_idx in skip_indices:
-                        continue
-                    try:
-                        desc_amount = float(desc_trans['amount'])
-                        if abs(desc_amount - expected_amount) < 0.5:  # Match found!
-                            # Merge them - replace balance line with merged version
-                            merged_trans = {
-                                'date': bal_trans['date'],  # Use date from balance line
-                                'description': desc_trans['description'],
-                                'amount': desc_trans['amount'],
-                                'balance': bal_trans['balance']
-                            }
-                            replacements[bal_idx] = merged_trans
-                            skip_indices.add(desc_idx)  # Skip the desc-only line
-                            print(f"  ✓ Merged: {bal_trans['date']} {desc_trans['description'][:30]} £{desc_trans['amount']} Bal:£{bal_trans['balance']}")
-                            break
-                    except:
-                        pass
-        except:
-            pass
+            # Merge them - replace balance line with merged version
+            merged_trans = {
+                'date': bal_trans['date'],  # Use date from balance line
+                'description': desc_trans['description'],
+                'amount': desc_trans['amount'],
+                'balance': bal_trans['balance']
+            }
+            replacements[bal_idx] = merged_trans
+            skip_indices.add(desc_idx)
+            print(f"  ✓ Merged: {bal_trans['date']} {desc_trans['description'][:30]} £{desc_trans['amount']} Bal:£{bal_trans['balance']}")
     
     # Build final list maintaining original order
     result = []
@@ -383,54 +469,95 @@ def determine_debit_credit(all_transactions, working_balances=None):
         # Use working balance for this transaction
         current_balance = working_balances[i]
         
-        # Special handling for Non-Sterling Transaction Fee - always a fee (paid out)
+        # Determine IN/OUT based on transaction prefix codes from PDF
         desc = trans['description']
-        if 'Non-Sterling Transaction Fee' in desc or 'DRNon-Sterling Transaction Fee' in desc:
-            trans['paid_out'] = trans['amount']
-            trans['paid_in'] = ''
-            if current_balance is not None:
-                previous_balance = current_balance
-            continue
         
-        if current_balance is not None and previous_balance is not None:
-            # Check if balance went UP or DOWN
-            # Money OUT: current = previous - amount (balance decreased)
-            # Money IN: current = previous + amount (balance increased)
-            
-            money_out_diff = abs(current_balance - (previous_balance - amount))
-            money_in_diff = abs(current_balance - (previous_balance + amount))
-            
-            # Tolerance for fees/rounding
-            if money_out_diff < 5:  # Money OUT (balance decreased)
-                trans['paid_out'] = trans['amount']
-                trans['paid_in'] = ''
-            elif money_in_diff < 5:  # Money IN (balance increased)
+        # PAID IN (Credits to account):
+        # - CR*/CRADVICE/CRA = Credits (always incoming)
+        if desc.startswith(('CR', 'CRA', 'CRADVICE')):
+            trans['paid_in'] = trans['amount']
+            trans['paid_out'] = ''
+        
+        # BP = Bank Payment (can be incoming OR outgoing)
+        # ESMER V D TAKA is incoming (person sending money)
+        # Other BP are usually outgoing (paying invoices, etc.)
+        elif desc.startswith('BP'):
+            # Check if it's a known incoming BP pattern
+            if 'ESMER V D TAKA' in desc.upper():
                 trans['paid_in'] = trans['amount']
                 trans['paid_out'] = ''
+            elif current_balance is not None and previous_balance is not None:
+                # Use balance change to determine
+                if current_balance < previous_balance:
+                    # Balance decreased = money out
+                    trans['paid_out'] = trans['amount']
+                    trans['paid_in'] = ''
+                else:
+                    # Balance increased = money in
+                    trans['paid_in'] = trans['amount']
+                    trans['paid_out'] = ''
             else:
-                # Can't determine from balance - check if balance actually decreased or increased
+                # No balance info - default to paid out for BP (most common)
+                trans['paid_out'] = trans['amount']
+                trans['paid_in'] = ''
+        
+        # PAID OUT (Debits from account):
+        # - DD = Direct Debit
+        # - VIS = Visa Card
+        # - ATM = ATM withdrawal
+        # - ))) = Contactless payment
+        # - DR = Debit/Fee
+        # Note: TFR (Transfer) removed - can be in OR out, needs balance check
+        elif desc.startswith(('DD', 'VIS', 'ATM', ')))', 'DR')):
+            trans['paid_out'] = trans['amount']
+            trans['paid_in'] = ''
+        
+        # TFR = Transfer (can be incoming OR outgoing - check balance)
+        elif desc.startswith('TFR'):
+            if current_balance is not None and previous_balance is not None:
+                if current_balance < previous_balance:
+                    # Balance decreased = money out
+                    trans['paid_out'] = trans['amount']
+                    trans['paid_in'] = ''
+                else:
+                    # Balance increased = money in
+                    trans['paid_in'] = trans['amount']
+                    trans['paid_out'] = ''
+            else:
+                # No balance info - default to paid in for transfers
+                trans['paid_in'] = trans['amount']
+                trans['paid_out'] = ''
+            trans['paid_in'] = ''
+        
+        # Empty description (orphaned transactions) - usually debits
+        elif not desc or len(desc) < 3:
+            # Check if marked as orphan debit
+            if trans.get('_is_orphan_debit'):
+                trans['paid_out'] = trans['amount']
+                trans['paid_in'] = ''
+            elif current_balance is not None and previous_balance is not None:
                 if current_balance < previous_balance:
                     trans['paid_out'] = trans['amount']
                     trans['paid_in'] = ''
                 else:
                     trans['paid_in'] = trans['amount']
                     trans['paid_out'] = ''
-        elif current_balance is not None:
-            # First transaction with balance - need to guess
-            # Check the account summary to know starting balance
-            # For now, assume CR/CRS/CRA = IN, others = OUT
-            if desc.startswith(('CR', 'CRS', 'CRA')):
-                trans['paid_in'] = trans['amount']
-                trans['paid_out'] = ''
             else:
+                # No balance info - default to paid out
                 trans['paid_out'] = trans['amount']
                 trans['paid_in'] = ''
+        
+        # Other/Unknown - use balance change if available
         else:
-            # No balance info - guess based on description
-            if desc.startswith(('CR', 'CRS', 'CRA')):
-                trans['paid_in'] = trans['amount']
-                trans['paid_out'] = ''
+            if current_balance is not None and previous_balance is not None:
+                if current_balance < previous_balance:
+                    trans['paid_out'] = trans['amount']
+                    trans['paid_in'] = ''
+                else:
+                    trans['paid_in'] = trans['amount']
+                    trans['paid_out'] = ''
             else:
+                # Default to paid out for unknown types
                 trans['paid_out'] = trans['amount']
                 trans['paid_in'] = ''
         
@@ -481,7 +608,7 @@ def export_to_csv(transactions, output_file='statement_transactions.csv'):
             clean_desc = clean_description(trans['description'])
             
             writer.writerow({
-                'Date': trans['date'],
+                'Date': trans['date'].replace(' ', '-'),  # Convert "21 Mar 22" to "21-Mar-22"
                 'Payment type': payment_type,
                 'Details': clean_desc,
                 '£Paid out': trans.get('paid_out', ''),
@@ -492,8 +619,15 @@ def export_to_csv(transactions, output_file='statement_transactions.csv'):
     print(f"✅ Successfully exported {len(filtered_transactions)} transactions to {output_file}")
     return output_file
 
-def process_pdf(pdf_path, output_dir):
-    """Process a single PDF file and create CSV output"""
+def process_pdf(pdf_path, output_dir, export=True):
+    """
+    Process a single PDF file and create CSV output.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        output_dir: Directory for CSV output
+        export: If True, export to CSV immediately. If False, return transactions for later export.
+    """
     print("\n" + "="*70)
     print(f"  Processing: {os.path.basename(pdf_path)}")
     print("="*70)
@@ -513,10 +647,11 @@ def process_pdf(pdf_path, output_dir):
     print(f"✅ Found {len(all_transactions)} transactions across {len(pages)} pages")
     print("="*70)
     
-    # Merge split transactions (e.g., balance line + description from footer)
-    print("\n📋 Merging split transactions...")
-    all_transactions = merge_split_transactions(all_transactions)
-    print(f"✅ After merging: {len(all_transactions)} transactions")
+    # Merge split transactions (only if exporting individually, not in combined mode)
+    if export:
+        print("\n📋 Merging split transactions...")
+        all_transactions = merge_split_transactions(all_transactions)
+        print(f"✅ After merging: {len(all_transactions)} transactions")
     
     # Calculate working balances for determining IN/OUT (without modifying balance field)
     print("\n📋 Calculating balances for debit/credit determination...")
@@ -534,15 +669,20 @@ def process_pdf(pdf_path, output_dir):
         paid_in = trans.get('paid_in', '')
         print(f"  • {trans['date']} | {payment_type:15} | {clean_desc[:30]:<30} | Out:£{paid_out if paid_out else '-':<8} | In:£{paid_in if paid_in else '-':<8}")
     
-    # Export to CSV with filename based on PDF name
-    pdf_basename = os.path.splitext(os.path.basename(pdf_path))[0]
-    output_filename = f"{pdf_basename}_transactions.csv"
-    output_path = os.path.join(output_dir, output_filename)
-    csv_file = export_to_csv(all_transactions, output_file=output_path)
-    
-    print("\n" + "="*70)
-    print(f"🎉 DONE! Your transactions are in {csv_file}")
-    print("="*70)
+    # Export to CSV or return transactions
+    if export:
+        # Export to CSV with filename based on PDF name
+        pdf_basename = os.path.splitext(os.path.basename(pdf_path))[0]
+        output_filename = f"{pdf_basename}_transactions.csv"
+        output_path = os.path.join(output_dir, output_filename)
+        csv_file = export_to_csv(all_transactions, output_file=output_path)
+        
+        print("\n" + "="*70)
+        print(f"🎉 DONE! Your transactions are in {csv_file}")
+        print("="*70)
+    else:
+        # Return transactions for combined export
+        return all_transactions
     
     return csv_file
 
@@ -607,17 +747,121 @@ if __name__ == "__main__":
     for pdf in pdf_files:
         print(f"   - {pdf.name}")
     
-    # Process each PDF file
-    processed_count = 0
-    for pdf_path in pdf_files:
-        try:
-            process_pdf(str(pdf_path), str(output_dir))
-            processed_count += 1
-        except Exception as e:
-            print(f"\n❌ ERROR processing {pdf_path.name}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            continue
+    print(f"\n📋 Mode: {'Combined output (one CSV for all PDFs)' if COMBINED_OUTPUT else 'Separate output (one CSV per PDF)'}")
+    
+    # Process based on mode
+    if COMBINED_OUTPUT:
+        # Combined mode: Collect all transactions first, then export once
+        all_combined_transactions = []
+        processed_count = 0
+        
+        for pdf_path in pdf_files:
+            try:
+                transactions = process_pdf(str(pdf_path), str(output_dir), export=False)
+                all_combined_transactions.extend(transactions)
+                processed_count += 1
+            except Exception as e:
+                print(f"\n❌ ERROR processing {pdf_path.name}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        if all_combined_transactions:
+            # Sort all transactions by date
+            print("\n" + "="*70)
+            print(f"📋 Combining and sorting {len(all_combined_transactions)} transactions...")
+            print("="*70)
+            
+            # Convert date format from "21 Mar 22" to sortable format for proper ordering
+            def parse_transaction_date(date_str):
+                """Convert '21 Mar 22' to datetime-sortable format"""
+                months = {
+                    'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+                    'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+                    'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+                }
+                parts = date_str.split()
+                if len(parts) == 3:
+                    day, month_name, year = parts
+                    month = months.get(month_name, '00')
+                    full_year = f"20{year}"  # Assume 20xx for years
+                    return f"{full_year}{month}{day.zfill(2)}"  # YYYYMMDD format for sorting
+                return date_str
+            
+            # Keep PDF's original order - don't sort by date
+            # (Transactions are already in chronological order as they appear in the PDFs)
+            print(f"✅ Keeping original PDF order for {len(all_combined_transactions)} transactions")
+            
+            # Merge split transactions
+            print("\n📋 Merging split transactions...")
+            all_combined_transactions = merge_split_transactions(all_combined_transactions)
+            print(f"✅ After merging: {len(all_combined_transactions)} transactions")
+            
+            # Re-calculate working balances and direction after merging
+            print("\n📋 Recalculating balances for debit/credit determination...")
+            working_balances = calculate_working_balances(all_combined_transactions)
+            all_combined_transactions = determine_debit_credit(all_combined_transactions, working_balances)
+            
+            # Fill in missing balances by propagating from known balances
+            print("\n📋 Filling in missing balances...")
+            for i in range(len(all_combined_transactions)):
+                trans = all_combined_transactions[i]
+                # If this transaction already has a balance, use it
+                if trans.get('balance'):
+                    continue
+                
+                # Find the previous transaction with a balance
+                prev_balance = None
+                for j in range(i-1, -1, -1):
+                    if all_combined_transactions[j].get('balance'):
+                        try:
+                            prev_balance = float(all_combined_transactions[j]['balance'])
+                            break
+                        except:
+                            pass
+                
+                # If we found a previous balance, calculate this transaction's balance
+                if prev_balance is not None:
+                    try:
+                        paid_out = float(trans.get('paid_out', 0) or 0)
+                        paid_in = float(trans.get('paid_in', 0) or 0)
+                        new_balance = prev_balance - paid_out + paid_in
+                        trans['balance'] = f"{new_balance:.2f}"
+                        print(f"  ✓ Calculated balance for {trans['date']} {trans['description'][:30]}: £{new_balance:.2f}")
+                    except Exception as e:
+                        print(f"  ⚠️  Could not calculate balance for {trans['date']}: {e}")
+            
+            # Get date range from first and last transactions
+            first_date = all_combined_transactions[0]['date']
+            last_date = all_combined_transactions[-1]['date']
+            first_sortable = parse_transaction_date(first_date)
+            last_sortable = parse_transaction_date(last_date)
+            
+            # Format for filename: YYYY-MM-DD
+            first_formatted = f"{first_sortable[:4]}-{first_sortable[4:6]}-{first_sortable[6:8]}"
+            last_formatted = f"{last_sortable[:4]}-{last_sortable[4:6]}-{last_sortable[6:8]}"
+            
+            # Create combined CSV filename
+            output_filename = f"All_Transactions_{first_formatted}_to_{last_formatted}.csv"
+            output_path = os.path.join(str(output_dir), output_filename)
+            
+            csv_file = export_to_csv(all_combined_transactions, output_file=output_path)
+            
+            print("\n" + "="*70)
+            print(f"🎉 DONE! Combined {len(all_combined_transactions)} transactions in {csv_file}")
+            print("="*70)
+    else:
+        # Separate mode: Export each PDF individually
+        processed_count = 0
+        for pdf_path in pdf_files:
+            try:
+                process_pdf(str(pdf_path), str(output_dir), export=True)
+                processed_count += 1
+            except Exception as e:
+                print(f"\n❌ ERROR processing {pdf_path.name}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                continue
     
     print("\n" + "="*70)
     print(f"🎉 COMPLETE! Successfully processed {processed_count} of {len(pdf_files)} PDF file(s)")
