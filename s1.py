@@ -18,7 +18,7 @@ if sys.platform == 'win32':
 #   - PDF_DIRECTORY = "pdfs"                                    # Project pdfs folder (relative)
 #   - PDF_DIRECTORY = r"C:\HSBC convert"                        # Absolute Windows path
 #   - PDF_DIRECTORY = r"C:\Users\YourName\Documents\Statements" # Another absolute path
-PDF_DIRECTORY = r"PDFs22"  # Testing from C:\HSBC convert
+PDF_DIRECTORY = r"PDFs"  # Testing from C:\HSBC convert
 
 # Output directory for CSV files
 # Examples:
