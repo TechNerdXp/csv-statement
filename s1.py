@@ -322,17 +322,33 @@ def parse_page_transactions(page_text, page_num, last_date_from_prev_page=None):
                         # Find the balance-only line with same date (this is what will be merged)
                         orphan_balance = ''
                         balance_line_idx = trans_idx
+                        balance_line_trans = None
                         for t_idx, t in enumerate(transactions):
                             if t['date'] == trans['date'] and not t['description'] and not t['amount'] and t['balance']:
                                 orphan_balance = t['balance']
                                 balance_line_idx = t_idx  # Insert after this line instead
+                                balance_line_trans = t
                                 break
+                        
+                        # Calculate the correct balance for the balance-only line (before orphan deduction)
+                        # The balance-only line currently shows balance AFTER orphan, but it should show balance BEFORE
+                        if orphan_balance:
+                            try:
+                                balance_after = float(orphan_balance)
+                                orphan_amt = float(orphan_amount)
+                                balance_before = balance_after + orphan_amt  # Add back the orphan amount
+                                # Update the balance-only line's balance
+                                if balance_line_trans:
+                                    balance_line_trans['balance'] = f"{balance_before:.2f}"
+                                    print(f"  ℹ️  Adjusted balance-only line balance: £{balance_after:.2f} → £{balance_before:.2f}")
+                            except:
+                                pass
                         
                         orphan_trans = {
                             'date': trans['date'],
                             'description': desc_parts + ' ' + reference if desc_parts else '',
                             'amount': orphan_amount,
-                            'balance': orphan_balance,  # Use balance from balance-only line if found
+                            'balance': orphan_balance,  # This will be the balance AFTER the orphan is deducted
                             '_is_orphan_debit': True  # Mark as orphaned debit for direction logic
                         }
                         orphans_to_insert.append((balance_line_idx, orphan_trans))  # Insert after balance line
